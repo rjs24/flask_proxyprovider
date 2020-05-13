@@ -1,71 +1,101 @@
 from flask import Flask
+from flask import jsonify
+from flask import request
 app = Flask(__name__)
 import random
+import boto3
 import os
-import time
-import requests
-from bs4 import BeautifulSoup
 import csv
-import json
+import time
 
-def generate_new_proxyfile():
-    #function to request info from 'https://free-proxy-list.net/' and generate new file ./proxy_list.csv
-    get_page = requests.get('https://free-proxy-list.net/')
-    soup = BeautifulSoup(get_page.text, 'lxml')
-    data_list = []
-    data_table = soup.findAll('tbody')[0]
-    no_proxy_list = ['Iran', "Russian Federation", "Iraq", "Cambodia", "Bangladesh", "Pakistan"]
-    for row in data_table.findAll('tr'):
-        row_list = []
-        for cell in row.findAll('td'):
-            row_list.append(cell.getText())
-        data_list.append(row_list)
+ec2 = boto3.resource('ec2')
 
-    final_proxy_list = []
-    for rw in data_list:
-        if rw[4] == 'elite proxy' and rw[3] not in no_proxy_list:
-            final_proxy_list.append({'ip': rw[0], 'port': rw[1], 'country': rw[3]})
+
+def create_new_region():
+    #return new region, maybe needed further down line
+    regions_list = []
+    with open('regionslist.csv', 'r') as f:
+        csv_reader = csv.reader(f)
+        regions_list = list(csv_reader)
+        for reg in regions_list:
+            for r in reg:
+                if '.' not in r and 'gov' not in r and r.islower():
+                    regions_list.append(r)
+                else:
+                    continue
+    return regions_list
+
+def remove_ec2_instance(instance_id):
+    #function to stop and remove an ec2 instance
+    instance = ec2.Instance(instance_id)
+    instance.terminate()
+    return instance_id
+
+
+def create_new_ec2_instance(instance_count):
+    #function to start instance
+    ami_id = 'ami-0afbec417ce8b6702'
+    if instance_count < 21:
+        instance_count += 1
+        instance = ec2.create_instances(
+            ImageId = ami_id,
+            MinCount=1,
+            MaxCount=instance_count,
+            InstanceType='t2.micro',
+            KeyName=os.environ.get('AWSKEYS'),
+            SecurityGroupIds=[
+                'custom_satellite',
+            ]
+        )
+        return instance
+    else:
+        return
+
+
+def proxy_ips():
+    #get all the ip addresses into list
+    proxy_list = []
+    for inst in ec2.instances.all():
+        if inst:
+            proxy_list.append(inst.public_ip_address)
         else:
             continue
-    with open('proxy_list.csv', 'w') as proxy_write:
-        keys = ['ip', 'port', 'country']
-        diction_writ = csv.DictWriter(proxy_write, fieldnames=keys)
-        diction_writ.writeheader()
-        diction_writ.writerows(final_proxy_list)
-        proxy_write.close()
+    return proxy_list
 
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def server_running():
-    return 'Server running'
+    #aim return randomly selected ip of aws instance
+    prox_list = proxy_ips()
+    if len(prox_list) > 0:
+        return jsonify({'new_ip': random.choice(prox_list)})
+    else:
+        id = create_new_ec2_instance(1)
+        time.sleep(30)
+        return jsonify({'instance_id': id})
 
-@app.route('/proxy')
+
+@app.route('/proxy', methods=['GET','POST'])
 def new_proxy():
-    #return new proxy from proxy list if proxy list is less than 15 mins old
-    proxy_list = 'Not defined yet'
-    while proxy_list == 'Not defined yet':
-        try:
-            with open('proxy_list.csv', 'r') as proxys:
-                file_datestamp = os.path.getmtime('proxy_list.csv')
-                current_time = time.time()
-                if current_time - file_datestamp > 30:
-                    generate_new_proxyfile()
-                    time.sleep(5)
-                    continue
+    instance_count = len(proxy_ips())
+    if request.method == "POST":
+        if instance_count < 5:
+            instance_count = 2
+            create_new_ec2_instance(instance_count)
+        elif instance_count > 0 < 21:
+            instance_count += 1
+            create_new_ec2_instance(instance_count)
+        else:
+            instance_ip = request.get_json()
+            for inst in ec2.instances.all():
+                if inst.public_ip_address == instance_ip['ip']:
+                    remove_ec2_instance(inst.id)
                 else:
-                    return_proxy_list = []
-                    proxy_list = proxys.readlines()
-                    for prx in proxy_list:
-                        if prx and "ip" not in prx:
-                            prxy_details = prx.split(",")
-                            prxy_string = "%s:%s" % (prxy_details[0], prxy_details[1])
-                            return_proxy_list.append(prxy_string)
-                        else:
-                            continue
-                    return json.dumps(return_proxy_list)
-        except FileNotFoundError as no_file_here:
-            generate_new_proxyfile()
-    proxys.close()
+                    continue
+        return jsonify({'message':'proxy_list updated'})
+    else:
+        new_ips_list = proxy_ips()
+        return jsonify({'ips list': new_ips_list})
 
 if __name__ == '__main__':
     app.run(port=5000, threaded=True, host=('0.0.0.0'))
