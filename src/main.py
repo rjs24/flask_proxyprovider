@@ -68,7 +68,8 @@ def server_running():
     #aim return randomly selected ip of aws instance
     prox_list = proxy_ips()
     if len(prox_list) > 0:
-        return jsonify({'new_ip': random.choice(prox_list)})
+        prox_string = str(random.choice(prox_list)) + ':8888'
+        return jsonify({'new_ip': prox_string})
     else:
         id = create_new_ec2_instance(1)
         time.sleep(30)
@@ -79,7 +80,7 @@ def server_running():
 def new_proxy():
     instance_count = len(proxy_ips())
     if request.method == "POST":
-        if instance_count < 5:
+        if instance_count == 0:
             instance_count = 2
             create_new_ec2_instance(instance_count)
         elif instance_count > 0 < 21:
